@@ -182,10 +182,317 @@ SSH     TCP         22      Custom → YOUR_HOME_IP/32 (e.g. 203.0.113.5/32)
 **k8s-sg-nlb — Inbound Rules:**
 
 ```
-Type	Protocol	Port	Source
-Customer TCP	TCP	6443	Custom → k8s-sg-bastion
-Customer TCP	TCP	6443	Custom → k8s-sg-workers
-Customer TCP	TCP	6443	Custom → k8s-sg-control-plane
-<img width="466" height="97" alt="image" src="https://github.com/user-attachments/assets/746ece3e-a961-4051-8211-e6c97c4ba87b" />
+Type	    Protocol	Port	Source
+CustomTCP	TCP	6443	Custom → k8s-sg-bastion
+CustomTCP	TCP	6443	Custom → k8s-sg-workers
+CustomTCP	TCP	6443	Custom → k8s-sg-control-plane
+```
+
+**k8s-sg-control-plane — Inbound Rules:**
 
 ```
+Type	    Protocol	Port	    Source
+Custom TCP	TCP	        6443	    Custom → k8s-sg-nlb
+Custom TCP	TCP	        6443	    Custom → k8s-sg-workers
+Custom TCP	TCP	        6443	    Custom → k8s-sg-control-plane
+Custom TCP	TCP	        2379-2380	Custom → k8s-sg-control-plane
+Custom TCP	TCP	        10250	    Custom → k8s-sg-control-plane
+Custom TCP	TCP	        10259	    Custom → k8s-sg-control-plane
+Custom TCP	TCP	        10257	    Custom → k8s-sg-control-plane
+Custom TCP	TCP	        5473	    Custom → k8s-sg-control-plane
+Custom TCP	TCP	        5473	    Custom → k8s-sg-workers
+Custom TCP	TCP	        179	        Custom → k8s-sg-control-plane
+Custom TCP	TCP	        179	        Custom → k8s-sg-workers
+Custom UDP	UDP	        4789	    Custom → k8s-sg-control-plane
+Custom UDP	UDP	        4789	    Custom → k8s-sg-workers
+SSH	        TCP	        22	        Custom → k8s-sg-bastion
+```
+
+**k8s-sg-workers — Inbound Rules:**
+
+```
+Type	    Protocol	Port	        Source
+Custom TCP	TCP	        10250	        Custom → k8s-sg-control-plane
+Custom TCP	TCP	        10256	        Custom → k8s-sg-control-plane
+Custom TCP	TCP	        30000-32767	    Custom → k8s-sg-nlb
+Custom UDP	UDP	        30000-32767	    Custom → k8s-sg-nlb
+Custom TCP	TCP	        5473	        Custom → k8s-sg-control-plane
+Custom TCP	TCP	        179	            Custom → k8s-sg-control-plane
+Custom UDP	UDP	        4789	        Custom → k8s-sg-control-plane
+Custom UDP	UDP	        4789	        Custom → k8s-sg-workers
+SSH	        TCP	        22	            Custom → k8s-sg-bastion
+```
+
+**Step 1.4 — Create an SSH Key Pair**
+Go to: **EC2 → Key Pairs → Create key pair**
+
+```
+Name:          k8s-key
+Key pair type: RSA
+File format:   .pem
+Create key pair
+```
+
+**Step 1.5 — Launch All EC2 Instances (6 total)**
+
+Go to: EC2 → Instances → Launch Instances
+Launch them one at a time with these exact settings:
+
+**Bastion Host**
+
+```
+Name:                    bastion
+AMI:                     Ubuntu Server 24.04 LTS (64-bit x86)
+                         (Search "Ubuntu 24" in the AMI search box)
+Instance type:           t3.micro
+Key pair:                k8s-key
+
+Network settings (click Edit):
+  VPC:                   k8s-prod-vpc
+  Subnet:                public-1a
+  Auto-assign public IP: Enable ✓
+  Security group:        k8s-sg-bastion
+
+Storage:
+  8 GB   gp3
+
+Advanced details:
+  IAM instance profile:  (leave blank)
+
+Launch
+```
+
+**Control Plane 1**
+
+```
+Name:                    control-plane-1
+AMI:                     Ubuntu Server 24.04 LTS
+Instance type:           m7i-flex.large
+Key pair:                k8s-key
+
+Network settings:
+  VPC:                   k8s-prod-vpc
+  Subnet:                private-1a
+  Auto-assign public IP: Disable ✗
+  Security group:        k8s-sg-control-plane
+
+Storage:
+  50 GB  gp3
+
+Advanced details:
+  IAM instance profile:  k8s-control-plane-role
+
+Launch
+```
+
+**Control Plane 2 — same as CP1, same private-1a subnet**
+
+```
+Name:     control-plane-2
+Subnet:   private-1a
+All other settings: identical to control-plane-1
+```
+
+**Control Plane 3 — different subnet for AZ diversity**
+
+```
+Name:     control-plane-3
+Subnet:   private-1b           ← different AZ
+All other settings: identical to control-plane-1
+```
+
+**Worker 1**
+
+```
+Name:                    worker-1
+AMI:                     Ubuntu Server 24.04 LTS
+Instance type:           c7i-flex.large
+Key pair:                k8s-key
+
+Network settings:
+  VPC:                   k8s-prod-vpc
+  Subnet:                private-1a
+  Auto-assign public IP: Disable ✗
+  Security group:        k8s-sg-workers
+
+Storage:
+  100 GB  gp3
+
+Advanced details:
+  IAM instance profile:  k8s-worker-role
+
+Launch
+```
+
+**Worker 2 — different subnet**
+
+```
+Name:     worker-2
+Subnet:   private-1b           ← different AZ
+All other settings: identical to worker-1
+```
+
+**Write down all Private IPs now**. Go to EC2 → Instances, click each instance:
+
+```
+Bastion Public IP:    ______________________  (visible as Public IPv4)
+control-plane-1:      ______________________  (Private IPv4)
+control-plane-2:      ______________________  (Private IPv4)
+control-plane-3:      ______________________  (Private IPv4)
+worker-1:             ______________________  (Private IPv4)
+worker-2:             ______________________  (Private IPv4)
+```
+
+**Step 1.6 — Create the Network Load Balancer (HA API Server)**
+
+First, create the **Target Group**:
+Go to: **EC2 → Target Groups → Create target group**
+
+```
+Target type:           Instances
+Target group name:     k8s-api-tg
+Protocol:              TCP
+Port:                  6443
+VPC:                   k8s-prod-vpc
+
+Health check settings:
+  Protocol:            TCP
+  Port:                traffic port (6443)
+  Healthy threshold:   2
+  Unhealthy threshold: 2
+  Interval:            10 seconds
+
+Click Next
+
+Register targets:
+  ✓ Select control-plane-1
+  ✓ Select control-plane-2
+  ✓ Select control-plane-3
+  Click "Include as pending below"
+
+Create target group
+```
+
+****⚠️ Targets will show Unhealthy until kubeadm init runs. This is normal.****
+
+**Now create the NLB:**
+
+Go to: **EC2 → Load Balancers → Create load balancer → Network Load Balancer**
+
+```
+Load balancer name:    k8s-api-nlb
+Scheme:                Internal           ← NOT internet-facing
+IP address type:       IPv4
+
+Network mapping:
+  VPC:                 k8s-prod-vpc
+  Mappings:
+    ✓ us-east-1a → private-1a subnet
+    ✓ us-east-1b → private-1b subnet
+
+Security groups:       k8s-sg-nlb
+
+Listeners and routing:
+  Protocol: TCP   Port: 6443   Forward to: k8s-api-tg
+
+Create load balancer
+```
+
+After creation, go to the **NLB → Details tab** → copy the **DNS name**:
+
+```
+NLB DNS:   k8s-api-nlb-xxxxxxxxxxxxxxxx.elb.us-east-1.amazonaws.com
+
+Save this. You'll need it in Phase 4.
+```
+
+**PHASE 2 — Set Up SSH Access**
+
+Step 2.1 — Configure SSH on Your Laptop
+Set permissions on your key:
+
+```
+chmod 400 ~/Downloads/k8s-key.pem
+
+# Create SSH config (~/.ssh/config) — open with any text editor:
+
+nano ~/.ssh/config
+
+# Paste this, replacing all the IP placeholders with your real IPs:
+
+# Bastion — direct access from laptop
+Host bastion
+  HostName <BASTION_PUBLIC_IP>
+  User ubuntu
+  IdentityFile ~/Downloads/k8s-key.pem
+  StrictHostKeyChecking no
+
+# Control Plane nodes — jump through bastion
+Host control-plane-1
+  HostName <CP1_PRIVATE_IP>
+  User ubuntu
+  IdentityFile ~/Downloads/k8s-key.pem
+  ProxyJump bastion
+  StrictHostKeyChecking no
+
+Host control-plane-2
+  HostName <CP2_PRIVATE_IP>
+  User ubuntu
+  IdentityFile ~/Downloads/k8s-key.pem
+  ProxyJump bastion
+  StrictHostKeyChecking no
+
+Host control-plane-3
+  HostName <CP3_PRIVATE_IP>
+  User ubuntu
+  IdentityFile ~/Downloads/k8s-key.pem
+  ProxyJump bastion
+  StrictHostKeyChecking no
+
+# Worker nodes
+Host worker-1
+  HostName <W1_PRIVATE_IP>
+  User ubuntu
+  IdentityFile ~/Downloads/k8s-key.pem
+  ProxyJump bastion
+  StrictHostKeyChecking no
+
+Host worker-2
+  HostName <W2_PRIVATE_IP>
+  User ubuntu
+  IdentityFile ~/Downloads/k8s-key.pem
+  ProxyJump bastion
+  StrictHostKeyChecking no
+```
+
+**Save the file.**
+
+**Step 2.2 — Test All Connections**
+
+```
+ssh bastion            # should give ubuntu@bastion prompt
+ssh control-plane-1    # should jump through bastion to CP1
+ssh control-plane-2
+ssh control-plane-3
+ssh worker-1
+ssh worker-2
+```
+
+**Step 2.3 — Install kubectl on Bastion**
+
+```
+# SSH to bastion first
+ssh bastion
+
+# Install kubectl
+curl -LO "https://dl.k8s.io/release/v1.33.1/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+kubectl version --client
+
+# Create .kube directory
+mkdir -p ~/.kube
+
+# Exit bastion
+exit
+```
+
