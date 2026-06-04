@@ -197,6 +197,7 @@ Custom TCP	TCP	        6443	    Custom → k8s-sg-workers
 Custom TCP	TCP	        6443	    Custom → k8s-sg-control-plane
 Custom TCP	TCP	        2379-2380	Custom → k8s-sg-control-plane
 Custom TCP	TCP	        10250	    Custom → k8s-sg-control-plane
+Custom TCP	TCP	        10250	    Custom → k8s-sg-workers
 Custom TCP	TCP	        10259	    Custom → k8s-sg-control-plane
 Custom TCP	TCP	        10257	    Custom → k8s-sg-control-plane
 Custom TCP	TCP	        5473	    Custom → k8s-sg-control-plane
@@ -213,6 +214,7 @@ SSH	        TCP	        22	        Custom → k8s-sg-bastion
 ```
 Type	    Protocol	Port	        Source
 Custom TCP	TCP	        10250	        Custom → k8s-sg-control-plane
+Custom TCP	TCP	        10250	        Custom → k8s-sg-workers
 Custom TCP	TCP	        10256	        Custom → k8s-sg-control-plane
 Custom TCP	TCP	        30000-32767	    Custom → k8s-sg-nlb
 Custom UDP	UDP	        30000-32767	    Custom → k8s-sg-nlb
