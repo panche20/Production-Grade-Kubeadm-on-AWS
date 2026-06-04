@@ -408,6 +408,52 @@ NLB DNS:   k8s-api-nlb-xxxxxxxxxxxxxxxx.elb.us-east-1.amazonaws.com
 Save this. You'll need it in Phase 4.
 ```
 
+**VPC Endpoint**
+
+Pods call AWS APIs privately within the VPC — no internet, no NAT needed.
+
+Go to: **AWS Console → VPC → Endpoints → Create Endpoint**
+**Endpoint 1: EC2 API (required for EBS CSI)**
+
+```
+Service category:  AWS services
+Service name:      com.amazonaws.us-east-1.ec2  (search "ec2" and select it)
+VPC:               k8s-prod-vpc
+Subnets:           ✓ private-1a   ✓ private-1b
+Security group:    Create new SG:
+                     Inbound: HTTPS 443 from 10.0.0.0/16
+                              HTTPS 443 from 192.168.0.0/16  ← pod CIDR
+                     Outbound: All traffic
+Policy:            Full access
+Create endpoint
+```
+
+**Endpoint 2: STS (required for IAM auth)**
+
+```
+Service category:  AWS services
+Service name:      com.amazonaws.us-east-1.sts  (search "com.amazonaws.us-east-1.sts" and select it)
+VPC:               k8s-prod-vpc
+Subnets:           ✓ private-1a   ✓ private-1b
+Security group:    Create new SG:
+                     Inbound: HTTPS 443 from 10.0.0.0/16
+                              HTTPS 443 from 192.168.0.0/16  ← pod CIDR
+                     Outbound: All traffic
+Policy:            Full access
+Create endpoint
+```
+
+**Endpoint 3: S3 (recommended — free gateway endpoint)**
+
+```
+Service category:  AWS services
+Service name:      com.amazonaws.us-east-1.s3
+Type:              Gateway  ← different type, no cost
+VPC:               k8s-prod-vpc
+Route tables:      ✓ select both private route tables
+Create endpoint
+```
+
 **PHASE 2 — Set Up SSH Access**
 
 Step 2.1 — Configure SSH on Your Laptop
@@ -1124,6 +1170,19 @@ sudo kubeadm join <NLB_DNS>:6443 \
   --token <TOKEN_FROM_CP1_JOIN_COMMAND> \
   --discovery-token-ca-cert-hash sha256:<CA_CERT_FROM_CP1_JOIN_COMMAND> \
   --node-name worker-1
+```
+
+**Step 5.12 - Update CoreDNS Upstream DNS**
+
+```
+# Check what's on the node
+cat /etc/resolv.conf
+# If it shows 127.0.0.53 — that's the problem
+
+# Fix: Point to the real VPC DNS on all 5 nodes
+# Run this on each node (control-plane-1, 2, 3, worker-1, worker-2):
+sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+cat /etc/resolv.conf  # should now show 10.0.0.2 or 169.254.169.253
 ```
 
 **Follow the same steps followed from Worker-1 on Worker-2 node.**
