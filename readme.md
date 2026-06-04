@@ -496,3 +496,239 @@ mkdir -p ~/.kube
 exit
 ```
 
+## PHASE 3 — Prepare All Kubernetes Nodes
+
+**Run EVERY command in Phase 3 on ALL 5 K8s nodes** (3 control planes + 2 workers).
+
+Open 5 terminal windows. SSH into each node in a separate window. Run commands in all 5 simultaneously.
+
+**Step 3.1 — Set Hostnames**
+
+Run the command **matching the node** you're on:
+
+```
+# On control-plane-1:
+sudo hostnamectl set-hostname control-plane-1
+
+```
+
+**Step 3.2 — Update /etc/hosts on ALL 5 Nodes**
+Replace the IPs below with your actual private IPs, then run on every node:
+
+```
+sudo tee -a /etc/hosts << 'EOF'
+# Kubernetes cluster nodes
+<CP1_PRIVATE_IP>   control-plane-1
+<CP2_PRIVATE_IP>   control-plane-2
+<CP3_PRIVATE_IP>   control-plane-3
+<W1_PRIVATE_IP>    worker-1
+<W2_PRIVATE_IP>    worker-2
+EOF
+```
+
+Now, set variable called NLB_DNS with the NLB copied from AWS Console.
+
+```
+export NLB_DNS=<NLB DNS pasted from AWS console>
+
+Copy Private IP of Control Plane 1 using command "hostname -I | awk '{print $1}'". Then run,
+echo "<Private IP>  <NLB_DNS>" | sudo tee -a /etc/hosts
+
+grep "k8s-api-nlb" /etc/hosts
+```
+
+**Step 3.3 — Disable Swap**
+
+```
+# Disable immediately
+sudo swapoff -a
+
+# Disable permanently (survives reboot)
+sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+# Verify — Swap row must show 0
+free -h
+```
+
+**Step 3.4 — Load Kernel Modules**
+
+```
+# Write module names to auto-load config
+cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+overlay
+br_netfilter
+EOF
+
+# Load them right now (no reboot needed)
+sudo modprobe overlay
+sudo modprobe br_netfilter
+
+# Verify — both must return output
+lsmod | grep overlay
+lsmod | grep br_netfilter
+```
+
+**Step 3.5 — Configure Kernel Networking Parameters**
+
+```
+cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-iptables  = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward                 = 1
+EOF
+
+# Apply immediately
+sudo sysctl --system
+
+# Verify — all 3 must show = 1
+sysctl net.bridge.bridge-nf-call-iptables
+sysctl net.bridge.bridge-nf-call-ip6tables
+sysctl net.ipv4.ip_forward
+```
+
+**Step 3.6 — Install containerd (Container Runtime)**
+
+```
+# Download
+curl -LO https://github.com/containerd/containerd/releases/download/v1.7.28/containerd-1.7.28-linux-amd64.tar.gz
+
+# Extract to /usr/local
+sudo tar Cxzvf /usr/local containerd-1.7.28-linux-amd64.tar.gz
+
+# Get the systemd service file
+curl -LO https://raw.githubusercontent.com/containerd/containerd/main/containerd.service
+sudo mkdir -p /usr/local/lib/systemd/system/
+sudo mv containerd.service /usr/local/lib/systemd/system/
+
+# Generate default config
+sudo mkdir -p /etc/containerd
+containerd config default | sudo tee /etc/containerd/config.toml
+
+# Enable systemd cgroup (required for Kubernetes)
+sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
+
+# Set correct pause image
+sudo sed -i 's#sandbox_image = ".*"#sandbox_image = "registry.k8s.io/pause:3.10"#g' /etc/containerd/config.toml
+
+# Start and enable containerd
+sudo systemctl daemon-reload
+sudo systemctl enable --now containerd
+
+# Verify — must show Active: active (running)
+systemctl status containerd
+```
+
+**Step 3.7 — Install runc**
+
+```
+curl -LO https://github.com/opencontainers/runc/releases/download/v1.2.5/runc.amd64
+sudo install -m 755 runc.amd64 /usr/local/sbin/runc
+
+# Verify
+runc --version
+```
+
+**Step 3.8 — Install CNI Plugins**
+
+```
+curl -LO https://github.com/containernetworking/plugins/releases/download/v1.6.2/cni-plugins-linux-amd64-v1.6.2.tgz
+sudo mkdir -p /opt/cni/bin
+sudo tar Cxzvf /opt/cni/bin cni-plugins-linux-amd64-v1.6.2.tgz
+```
+
+**Step 3.9 — Install kubeadm, kubelet, kubectl**
+
+```
+# Dependencies
+sudo apt-get update
+sudo apt-get install -y apt-transport-https ca-certificates curl gpg
+
+# Add Kubernetes GPG key
+sudo mkdir -p -m 755 /etc/apt/keyrings
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.33/deb/Release.key | \
+  sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+# Add Kubernetes repo
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.33/deb/ /' | \
+  sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+# Install
+sudo apt-get update
+sudo apt-get install -y \
+  kubelet=1.33.1-1.1 \
+  kubeadm=1.33.1-1.1 \
+  kubectl=1.33.1-1.1 \
+  --allow-change-held-packages
+
+# Lock versions (prevent accidental upgrade)
+sudo apt-mark hold kubelet kubeadm kubectl
+
+# Enable kubelet
+sudo systemctl enable --now kubelet
+
+# Verify
+kubeadm version
+kubelet --version
+kubectl version --client
+containerd --version
+runc --version
+```
+
+**Step 3.10 — Configure crictl**
+
+```
+sudo crictl config runtime-endpoint unix:///var/run/containerd/containerd.sock
+
+# Verify — should return containerd info JSON
+sudo crictl info
+```
+
+**Step 4.1 — Initialize First Control Plane**
+
+Run kubeadm init:
+
+```
+sudo kubeadm init \
+  --control-plane-endpoint "$NLB_DNS:6443" \
+  --pod-network-cidr=192.168.0.0/16 \
+  --apiserver-advertise-address=$NODE_IP \
+  --apiserver-cert-extra-sans="$NLB_DNS,$NODE_IP,127.0.0.1" \
+  --upload-certs \
+  --node-name control-plane-1
+```
+
+**Copy both join commands into a text file on your laptop right now. You need them for the next steps.**
+
+**Step 4.2 — Set Up kubeconfig on control-plane-1**
+
+
+```
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+# Quick check — status will be NotReady (no CNI yet, that's fine)
+kubectl get nodes
+```
+
+**Step 4.3 — Copy kubeconfig to Bastion**
+
+From your laptop (not from CP1):
+
+```
+# Copy kubeconfig from CP1 through to bastion
+ssh control-plane-1 "cat ~/.kube/config" | \
+  ssh bastion "mkdir -p ~/.kube && cat > ~/.kube/config"
+
+# Verify kubectl works from bastion
+ssh bastion "kubectl get nodes"
+```
+
+**Step 4.4 — Join Control Plane 2**
+
+SSH to control-plane-2:
+
+```
+ssh control-plane-2
+```
+
