@@ -168,3 +168,24 @@ Description:          Kubernetes worker nodes
 VPC:                  k8s-prod-vpc
 Create (no rules yet)
 ```
+
+Now go back and edit each SG to add inbound rules. 
+Click the **SG name → Edit inbound rules**.
+
+**k8s-sg-bastion — Inbound Rules:**
+
+```
+Type    Protocol    Port    Source
+SSH     TCP         22      Custom → YOUR_HOME_IP/32 (e.g. 203.0.113.5/32)
+```
+
+**k8s-sg-nlb — Inbound Rules:**
+
+```
+Type	Protocol	Port	Source
+Customer TCP	TCP	6443	Custom → k8s-sg-bastion
+Customer TCP	TCP	6443	Custom → k8s-sg-workers
+Customer TCP	TCP	6443	Custom → k8s-sg-control-plane
+<img width="466" height="97" alt="image" src="https://github.com/user-attachments/assets/746ece3e-a961-4051-8211-e6c97c4ba87b" />
+
+```
